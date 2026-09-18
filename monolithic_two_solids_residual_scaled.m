@@ -1,7 +1,9 @@
-% DO NOT DELETE: used as the fsolve residual function handle in
-% solve_monolithic_two_solids_fsolve_timestep.m (the no-analytical-Jacobian
-% fallback path). Looks unused from the file list alone, but it is not --
-% verify call sites (grep) before ever removing this again.
+% DO NOT DELETE: referenced as the fsolve residual function handle in
+% solve_monolithic_two_solids_fsolve_timestep.m, used only when
+% par.useTwoSolidSemiAnalyticalJacobian is false (currently unreachable,
+% since softlube_prepare_case.m defaults it true and no run script overrides
+% it) -- but still referenced by name, so leaving it deleted is a latent bug
+% waiting to happen. Verify call sites (grep) before ever removing this again.
 
 function R = monolithic_two_solids_residual_scaled( ...
     y, old, meshE, interfaceE, baseE, ...

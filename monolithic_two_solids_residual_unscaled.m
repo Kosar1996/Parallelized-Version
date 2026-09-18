@@ -1,7 +1,8 @@
 % DO NOT DELETE: called directly by solve_monolithic_two_solids_fsolve_timestep.m
 % to compute the RE/RL/RF residual diagnostics printed after every Newton solve
-% attempt (every timestep, every run). Looks unused from the file list alone,
-% but it is not -- verify call sites (grep) before ever removing this again.
+% attempt (every timestep, every run) -- confirmed by an actual crash when this
+% file was deleted. Looks unused from the file list alone, but it is not --
+% verify call sites (grep) before ever removing this again.
 
 function [RE, RL, RF] = monolithic_two_solids_residual_unscaled( ...
     uE, uL, p, old, meshE, interfaceE, baseE, ... %#ok<INUSD>
