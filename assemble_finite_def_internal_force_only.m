@@ -18,8 +18,11 @@ function Fint = assemble_finite_def_internal_force_only(mesh, u, par)
         cache = mesh.axisymCache;
     end
 
-    iF = zeros(mesh.nelem * 8, 1);
-    vF = zeros(mesh.nelem * 8, 1);
+    % Cell-array sliced output: see the note in assemble_finite_def_axisym.m
+    % for why a computed-range slice (loc = ...; A(loc) = ...) isn't
+    % parfor-classifiable and this cell-array indirection is needed instead.
+    dofsCell = cell(mesh.nelem, 1);
+    feCell = cell(mesh.nelem, 1);
 
     parfor e = 1:mesh.nelem
         if useCache
@@ -31,9 +34,16 @@ function Fint = assemble_finite_def_internal_force_only(mesh, u, par)
             dofs = reshape([2*conn-1; 2*conn], [], 1);
             fe = finite_def_element_residual_only(Xe, u(dofs), mesh, par);
         end
+        dofsCell{e} = dofs;
+        feCell{e} = fe;
+    end
+
+    iF = zeros(mesh.nelem * 8, 1);
+    vF = zeros(mesh.nelem * 8, 1);
+    for e = 1:mesh.nelem
         loc = (8*(e-1)+1):(8*e);
-        iF(loc) = dofs;
-        vF(loc) = fe;
+        iF(loc) = dofsCell{e};
+        vF(loc) = feCell{e};
     end
 
     Fint = accumarray(iF, vF, [ndof, 1]);

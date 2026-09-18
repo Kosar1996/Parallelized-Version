@@ -43,9 +43,20 @@ function [Fint, K] = assemble_finite_def_axisym(mesh, u, par)
     end
     vK = zeros(size(iK));
 
-    % Element-exclusive slices for the force vector, same idea as vK above.
-    iF = zeros(mesh.nelem * 8, 1);
-    vF = zeros(mesh.nelem * 8, 1);
+    % Cell-array sliced output: parfor's static analyzer requires each
+    % iteration's write target to be directly indexable by the loop variable
+    % (A{e}, A(e,:), etc.) -- a computed range through an intermediate
+    % variable (loc = (8*(e-1)+1):(8*e); A(loc) = ...) is not classifiable
+    % and parfor refuses to run. Cell arrays sidestep this: each iteration
+    % writes to exactly its own cell, then a cheap serial loop afterward
+    % unpacks into the flat arrays accumarray/sparse need.
+    dofsCell = cell(mesh.nelem, 1);
+    feCell = cell(mesh.nelem, 1);
+    KeCell = cell(mesh.nelem, 1);
+    if ~useCache
+        iiCell = cell(mesh.nelem, 1);
+        jjCell = cell(mesh.nelem, 1);
+    end
 
     parfor e = 1:mesh.nelem
         if useCache
@@ -59,18 +70,31 @@ function [Fint, K] = assemble_finite_def_axisym(mesh, u, par)
             [fe, Ke] = finite_def_element_residual_tangent(Xe, u(dofs), mesh, par);
         end
 
-        locF = (8*(e-1)+1):(8*e);
-        iF(locF) = dofs;
-        vF(locF) = fe;
-
-        % Fixed, e-only-dependent slice -- no running counter, safe under parfor.
-        locK = (64*(e-1)+1):(64*e);
+        dofsCell{e} = dofs;
+        feCell{e} = fe;
+        KeCell{e} = Ke;
         if ~useCache
             [ii, jj] = ndgrid(dofs, dofs);
-            iK(locK) = ii(:);
-            jK(locK) = jj(:);
+            iiCell{e} = ii(:);
+            jjCell{e} = jj(:);
         end
-        vK(locK) = Ke(:);
+    end
+
+    % Element-exclusive slices for the force vector, same idea as vK above.
+    iF = zeros(mesh.nelem * 8, 1);
+    vF = zeros(mesh.nelem * 8, 1);
+
+    for e = 1:mesh.nelem
+        locF = (8*(e-1)+1):(8*e);
+        iF(locF) = dofsCell{e};
+        vF(locF) = feCell{e};
+
+        locK = (64*(e-1)+1):(64*e);
+        if ~useCache
+            iK(locK) = iiCell{e};
+            jK(locK) = jjCell{e};
+        end
+        vK(locK) = KeCell{e}(:);
     end
 
     Fint = accumarray(iF, vF, [ndof, 1]);

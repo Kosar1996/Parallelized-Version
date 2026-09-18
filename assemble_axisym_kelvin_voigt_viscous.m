@@ -44,8 +44,16 @@ function [Fvisc, Kvisc] = assemble_axisym_kelvin_voigt_viscous(mesh, u, uOld, pa
     end
     vK = zeros(size(iK));
 
-    iF = zeros(mesh.nelem * 8, 1);
-    vF = zeros(mesh.nelem * 8, 1);
+    % Cell-array sliced output: see the note in assemble_finite_def_axisym.m
+    % for why a computed-range slice (loc = ...; A(loc) = ...) isn't
+    % parfor-classifiable and this cell-array indirection is needed instead.
+    dofsCell = cell(mesh.nelem, 1);
+    feCell = cell(mesh.nelem, 1);
+    KeCell = cell(mesh.nelem, 1);
+    if ~useCache
+        iiCell = cell(mesh.nelem, 1);
+        jjCell = cell(mesh.nelem, 1);
+    end
 
     parfor e = 1:mesh.nelem
         if useCache
@@ -60,17 +68,30 @@ function [Fvisc, Kvisc] = assemble_axisym_kelvin_voigt_viscous(mesh, u, uOld, pa
                 Xe, u(dofs), uOld(dofs), mesh, par);
         end
 
+        dofsCell{e} = dofs;
+        feCell{e} = fe;
+        KeCell{e} = Ke;
+        if ~useCache
+            [ii, jj] = ndgrid(dofs, dofs);
+            iiCell{e} = ii(:);
+            jjCell{e} = jj(:);
+        end
+    end
+
+    iF = zeros(mesh.nelem * 8, 1);
+    vF = zeros(mesh.nelem * 8, 1);
+
+    for e = 1:mesh.nelem
         locF = (8*(e-1)+1):(8*e);
-        iF(locF) = dofs;
-        vF(locF) = fe;
+        iF(locF) = dofsCell{e};
+        vF(locF) = feCell{e};
 
         locK = (64*(e-1)+1):(64*e);
         if ~useCache
-            [ii, jj] = ndgrid(dofs, dofs);
-            iK(locK) = ii(:);
-            jK(locK) = jj(:);
+            iK(locK) = iiCell{e};
+            jK(locK) = jjCell{e};
         end
-        vK(locK) = Ke(:);
+        vK(locK) = KeCell{e}(:);
     end
 
     Fvisc = accumarray(iF, vF, [ndof, 1]);
