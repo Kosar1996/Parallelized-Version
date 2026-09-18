@@ -1,27 +1,13 @@
 function Fint = assemble_finite_def_internal_force_only(mesh, u, par)
-% Parallelized version (parfor over elements). Profiled as 4.2% of total
-% wall-clock time in the 1-timestep single-processor baseline -- one of the
-% four hot assembly functions targeted for parallelization. The pre-parfor
-% serial version is kept in pre_parallelization_backup/ for reference, and
-% the byte-identical verification is in
-% verify_assemble_finite_def_internal_force_only_refactor.m.
-%
-% Fint used to be built by direct indexed accumulation (Fint(dofs) =
-% Fint(dofs) + fe), unsafe under parfor because adjacent elements share
-% nodes. Fixed by collecting each element's [dofs, fe] into element-exclusive
-% slices, summed once via accumarray after the loop. No stiffness matrix
-% here (this function only returns Fint), so that's the only change needed.
 
     ndof = size(mesh.nodes,1)*2;
+    Fint = zeros(ndof,1);
     useCache = isfield(mesh, 'axisymCache');
     if useCache
         cache = mesh.axisymCache;
     end
 
-    iF = zeros(mesh.nelem * 8, 1);
-    vF = zeros(mesh.nelem * 8, 1);
-
-    parfor e = 1:mesh.nelem
+    for e = 1:mesh.nelem
         if useCache
             dofs = cache.dofs(e,:).';
             fe = finite_def_element_residual_only_cached(cache, e, u(dofs), par);
@@ -31,17 +17,9 @@ function Fint = assemble_finite_def_internal_force_only(mesh, u, par)
             dofs = reshape([2*conn-1; 2*conn], [], 1);
             fe = finite_def_element_residual_only(Xe, u(dofs), mesh, par);
         end
-        loc = (8*(e-1)+1):(8*e);
-        iF(loc) = dofs;
-        vF(loc) = fe;
+        Fint(dofs) = Fint(dofs) + fe;
     end
-
-    Fint = accumarray(iF, vF, [ndof, 1]);
 end
-
-% The two subfunctions below are copied unchanged from
-% assemble_finite_def_internal_force_only.m (MATLAB subfunctions are only
-% visible within their own file).
 
 function fe = finite_def_element_residual_only_cached(cache, e, ue, par)
     fe = zeros(8,1);

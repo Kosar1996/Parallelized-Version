@@ -1,12 +1,7 @@
-function [Fvisc, Kvisc] = assemble_axisym_kelvin_voigt_viscous(mesh, u, uOld, par)
-% Parallelized version (parfor over elements). Profiled as 54.2% of total
-% wall-clock time in the 1-timestep single-processor baseline -- the single
-% hottest function, and the top target for parallelization. The pre-parfor
-% serial version is kept in pre_parallelization_backup/ for reference, and
-% the byte-identical verification is in
-% verify_assemble_axisym_kelvin_voigt_viscous_refactor.m.
-%
-% Same fix as assemble_finite_def_axisym.m: Fvisc used to be built by direct
+function [Fvisc, Kvisc] = assemble_axisym_kelvin_voigt_viscous_parfor_safe(mesh, u, uOld, par)
+% PARFOR-SAFE REWRITE of assemble_axisym_kelvin_voigt_viscous.m (review copy,
+% not yet applied to the live file or wired into the solver). Same fix as
+% assemble_finite_def_axisym_parfor_safe.m: Fvisc used to be built by direct
 % indexed accumulation (Fvisc(dofs) = Fvisc(dofs) + fe), unsafe under parfor
 % because adjacent elements share nodes; and the non-cached branch used a
 % running ptr counter, a loop-carried dependency, also unsafe under parfor.

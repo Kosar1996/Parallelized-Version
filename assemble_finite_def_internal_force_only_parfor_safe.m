@@ -1,16 +1,12 @@
-function Fint = assemble_finite_def_internal_force_only(mesh, u, par)
-% Parallelized version (parfor over elements). Profiled as 4.2% of total
-% wall-clock time in the 1-timestep single-processor baseline -- one of the
-% four hot assembly functions targeted for parallelization. The pre-parfor
-% serial version is kept in pre_parallelization_backup/ for reference, and
-% the byte-identical verification is in
-% verify_assemble_finite_def_internal_force_only_refactor.m.
-%
-% Fint used to be built by direct indexed accumulation (Fint(dofs) =
-% Fint(dofs) + fe), unsafe under parfor because adjacent elements share
-% nodes. Fixed by collecting each element's [dofs, fe] into element-exclusive
-% slices, summed once via accumarray after the loop. No stiffness matrix
-% here (this function only returns Fint), so that's the only change needed.
+function Fint = assemble_finite_def_internal_force_only_parfor_safe(mesh, u, par)
+% PARFOR-SAFE REWRITE of assemble_finite_def_internal_force_only.m (review
+% copy, not yet applied to the live file or wired into the solver). Same
+% fix as the other two assembly rewrites in this folder: Fint used to be
+% built by direct indexed accumulation (Fint(dofs) = Fint(dofs) + fe),
+% unsafe under parfor because adjacent elements share nodes. Fixed by
+% collecting each element's [dofs, fe] into element-exclusive slices, summed
+% once via accumarray after the loop. No stiffness matrix here (this
+% function only returns Fint), so that's the only change needed.
 
     ndof = size(mesh.nodes,1)*2;
     useCache = isfield(mesh, 'axisymCache');

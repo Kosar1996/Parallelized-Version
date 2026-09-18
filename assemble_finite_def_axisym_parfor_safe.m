@@ -1,12 +1,11 @@
-function [Fint, K] = assemble_finite_def_axisym(mesh, u, par)
-% Parallelized version (parfor over elements). Profiled as 31.7% of total
-% wall-clock time in the 1-timestep single-processor baseline -- one of the
-% four hot assembly functions targeted for parallelization. The pre-parfor
-% serial version is kept in pre_parallelization_backup/ for reference, and
-% the byte-identical verification is in verify_assemble_finite_def_axisym_refactor.m.
+function [Fint, K] = assemble_finite_def_axisym_parfor_safe(mesh, u, par)
+% PARFOR-SAFE REWRITE of assemble_finite_def_axisym.m (review copy, saved
+% under its own name -- not yet applied to the live file, and not yet
+% wired into the solver. Verify with verify_assemble_finite_def_axisym_refactor.m
+% before either of those happen).
 %
-% Two changes from the original serial version, both needed for the element
-% loop to be a valid parfor:
+% Two changes from the original, both needed before the element loop can
+% become a parfor:
 %   1. Fint used to be built by direct indexed accumulation inside the loop
 %      (Fint(dofs) = Fint(dofs) + fe), which is unsafe under parfor because
 %      adjacent elements share nodes -- multiple workers could try to

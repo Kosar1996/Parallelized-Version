@@ -1,15 +1,11 @@
-function Fvisc = assemble_axisym_kelvin_voigt_viscous_force_only(mesh, u, uOld, par)
-% Parallelized version (parfor over elements). Profiled as 8.0% of total
-% wall-clock time in the 1-timestep single-processor baseline -- one of the
-% four hot assembly functions targeted for parallelization. The pre-parfor
-% serial version is kept in pre_parallelization_backup/ for reference, and
-% the byte-identical verification is in
-% verify_assemble_axisym_kelvin_voigt_viscous_force_only_refactor.m.
-%
-% Fvisc used to be built by direct indexed accumulation (Fvisc(dofs) =
-% Fvisc(dofs) + fe), unsafe under parfor because adjacent elements share
-% nodes. Fixed by collecting each element's [dofs, fe] into element-exclusive
-% slices, summed once via accumarray after the loop.
+function Fvisc = assemble_axisym_kelvin_voigt_viscous_force_only_parfor_safe(mesh, u, uOld, par)
+% PARFOR-SAFE REWRITE of assemble_axisym_kelvin_voigt_viscous_force_only.m
+% (review copy, not yet applied to the live file or wired into the solver).
+% Same fix as the other three assembly rewrites in this folder: Fvisc used
+% to be built by direct indexed accumulation (Fvisc(dofs) = Fvisc(dofs) +
+% fe), unsafe under parfor because adjacent elements share nodes. Fixed by
+% collecting each element's [dofs, fe] into element-exclusive slices, summed
+% once via accumarray after the loop.
 %
 % Note (pre-existing, not introduced here): the non-cached branch below calls
 % kelvin_voigt_element_residual_only, which is defined only as a subfunction

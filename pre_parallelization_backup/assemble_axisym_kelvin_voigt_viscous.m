@@ -1,25 +1,4 @@
 function [Fvisc, Kvisc] = assemble_axisym_kelvin_voigt_viscous(mesh, u, uOld, par)
-% Parallelized version (parfor over elements). Profiled as 54.2% of total
-% wall-clock time in the 1-timestep single-processor baseline -- the single
-% hottest function, and the top target for parallelization. The pre-parfor
-% serial version is kept in pre_parallelization_backup/ for reference, and
-% the byte-identical verification is in
-% verify_assemble_axisym_kelvin_voigt_viscous_refactor.m.
-%
-% Same fix as assemble_finite_def_axisym.m: Fvisc used to be built by direct
-% indexed accumulation (Fvisc(dofs) = Fvisc(dofs) + fe), unsafe under parfor
-% because adjacent elements share nodes; and the non-cached branch used a
-% running ptr counter, a loop-carried dependency, also unsafe under parfor.
-% Both fixed the same way -- element-exclusive slices, summed once via
-% accumarray after the loop.
-%
-% Note (pre-existing, not introduced here): the non-cached branch below calls
-% kelvin_voigt_element_residual_tangent, which is not defined anywhere in
-% this codebase. In practice this is never hit -- softlube_run_case_global_
-% coupled.m always builds mesh.axisymCache before assembly runs -- but this
-% branch is left exactly as broken as the original, since fixing it is a
-% separate, pre-existing issue and out of scope for parallelization prep.
-
     ndof = size(mesh.nodes,1)*2;
     Fvisc = zeros(ndof,1);
 
@@ -37,17 +16,16 @@ function [Fvisc, Kvisc] = assemble_axisym_kelvin_voigt_viscous(mesh, u, uOld, pa
         cache = mesh.axisymCache;
         iK = cache.iK;
         jK = cache.jK;
+        vK = zeros(size(iK));
     else
         nnzLocal = mesh.nelem * 64;
         iK = zeros(nnzLocal,1);
         jK = zeros(nnzLocal,1);
+        vK = zeros(nnzLocal,1);
+        ptr = 1;
     end
-    vK = zeros(size(iK));
 
-    iF = zeros(mesh.nelem * 8, 1);
-    vF = zeros(mesh.nelem * 8, 1);
-
-    parfor e = 1:mesh.nelem
+    for e = 1:mesh.nelem
         if useCache
             dofs = cache.dofs(e,:).';
             [fe, Ke] = kelvin_voigt_element_residual_tangent_cached( ...
@@ -60,25 +38,21 @@ function [Fvisc, Kvisc] = assemble_axisym_kelvin_voigt_viscous(mesh, u, uOld, pa
                 Xe, u(dofs), uOld(dofs), mesh, par);
         end
 
-        locF = (8*(e-1)+1):(8*e);
-        iF(locF) = dofs;
-        vF(locF) = fe;
-
-        locK = (64*(e-1)+1):(64*e);
-        if ~useCache
+        Fvisc(dofs) = Fvisc(dofs) + fe;
+        if useCache
+            loc = (64*(e-1)+1):(64*e);
+        else
             [ii, jj] = ndgrid(dofs, dofs);
-            iK(locK) = ii(:);
-            jK(locK) = jj(:);
+            loc = ptr:(ptr + 63);
+            iK(loc) = ii(:);
+            jK(loc) = jj(:);
+            ptr = ptr + 64;
         end
-        vK(locK) = Ke(:);
+        vK(loc) = Ke(:);
     end
 
-    Fvisc = accumarray(iF, vF, [ndof, 1]);
     Kvisc = sparse(iK, jK, vK, ndof, ndof);
 end
-
-% Copied unchanged from assemble_axisym_kelvin_voigt_viscous.m (MATLAB
-% subfunctions are only visible within their own file).
 
 function [fe, Ke] = kelvin_voigt_element_residual_tangent_cached(cache, e, ue, ueOld, par)
     fe = zeros(8,1);

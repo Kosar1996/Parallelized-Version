@@ -1,53 +1,22 @@
 function [Fint, K] = assemble_finite_def_axisym(mesh, u, par)
-% Parallelized version (parfor over elements). Profiled as 31.7% of total
-% wall-clock time in the 1-timestep single-processor baseline -- one of the
-% four hot assembly functions targeted for parallelization. The pre-parfor
-% serial version is kept in pre_parallelization_backup/ for reference, and
-% the byte-identical verification is in verify_assemble_finite_def_axisym_refactor.m.
-%
-% Two changes from the original serial version, both needed for the element
-% loop to be a valid parfor:
-%   1. Fint used to be built by direct indexed accumulation inside the loop
-%      (Fint(dofs) = Fint(dofs) + fe), which is unsafe under parfor because
-%      adjacent elements share nodes -- multiple workers could try to
-%      read-modify-write the same Fint entries at once. Fixed by collecting
-%      each element's [dofs, fe] into element-exclusive slices of iF/vF,
-%      then summing duplicates once, after the loop, via accumarray --
-%      exactly the same pattern already used for the stiffness matrix K.
-%   2. The non-cached branch used to track its iK/jK/vK write location with
-%      a running counter (ptr) that advances across iterations -- a
-%      loop-carried dependency, also unsafe under parfor. Fixed by computing
-%      each element's slice directly from e, with no dependency on prior
-%      iterations (same fixed-offset pattern the cached branch already used).
-%
-% Everything else -- the per-element physics in
-% finite_def_element_residual_tangent[_cached] -- is untouched.
-%
-% Correctness note: this file only changes HOW results are accumulated
-% (order of summation for shared-node force contributions is now decided by
-% accumarray instead of sequential +=), not WHAT is computed. Floating-point
-% addition is not strictly associative, so this must still be verified to
-% produce identical (or numerically negligible-difference) results against
-% the original before being trusted -- do not skip that check.
 
     ndof = size(mesh.nodes,1)*2;
+    Fint = zeros(ndof,1);
     useCache = isfield(mesh, 'axisymCache');
     if useCache
         cache = mesh.axisymCache;
         iK = cache.iK;
         jK = cache.jK;
+        vK = zeros(size(iK));
     else
         nnzLocal = mesh.nelem * 64;
         iK = zeros(nnzLocal,1);
         jK = zeros(nnzLocal,1);
+        vK = zeros(nnzLocal,1);
+        ptr = 1;
     end
-    vK = zeros(size(iK));
 
-    % Element-exclusive slices for the force vector, same idea as vK above.
-    iF = zeros(mesh.nelem * 8, 1);
-    vF = zeros(mesh.nelem * 8, 1);
-
-    parfor e = 1:mesh.nelem
+    for e = 1:mesh.nelem
         if useCache
             dofs = cache.dofs(e,:).';
             [fe, Ke] = finite_def_element_residual_tangent_cached( ...
@@ -59,27 +28,21 @@ function [Fint, K] = assemble_finite_def_axisym(mesh, u, par)
             [fe, Ke] = finite_def_element_residual_tangent(Xe, u(dofs), mesh, par);
         end
 
-        locF = (8*(e-1)+1):(8*e);
-        iF(locF) = dofs;
-        vF(locF) = fe;
-
-        % Fixed, e-only-dependent slice -- no running counter, safe under parfor.
-        locK = (64*(e-1)+1):(64*e);
-        if ~useCache
+        Fint(dofs) = Fint(dofs) + fe;
+        if useCache
+            loc = (64*(e-1)+1):(64*e);
+        else
             [ii, jj] = ndgrid(dofs, dofs);
-            iK(locK) = ii(:);
-            jK(locK) = jj(:);
+            loc = ptr:(ptr + 63);
+            iK(loc) = ii(:);
+            jK(loc) = jj(:);
+            ptr = ptr + 64;
         end
-        vK(locK) = Ke(:);
+        vK(loc) = Ke(:);
     end
 
-    Fint = accumarray(iF, vF, [ndof, 1]);
     K = sparse(iK, jK, vK, ndof, ndof);
 end
-
-% The two subfunctions below are copied unchanged from assemble_finite_def_axisym.m
-% (MATLAB subfunctions are only visible within their own file, so they can't be
-% reused across files by reference -- this file needs its own copy).
 
 function [fe, Ke] = finite_def_element_residual_tangent_cached(cache, e, ue, par)
     fe = zeros(8,1);
