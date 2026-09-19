@@ -1,26 +1,16 @@
-%% RUN_PARALLEL_1TIMESTEP
-% Runs exactly 1 timestep of the base case (item 2's corrected mesh files --
-% solid_leukocyte_P600.mat / solid_endothelium_P300.mat, pushed 9/17 5:15pm,
-% the current standard) using the parallelized assembly functions
-% (assemble_finite_def_axisym.m and the other 3 hot functions, now parfor
-% over elements).
-%
-% Processor count is read from the NUM_PROCS environment variable (set by
-% the Slurm submit script). A parpool of that size is opened BEFORE the
-% solve, for every processor count including 1 -- this keeps the comparison
-% fair: every run (1/2/4/8/16) goes through the same parallel-pool code
-% path, so the speedup curve measures the effect of worker count alone, not
-% "pool overhead vs. no pool" as a confound.
-%
-% The main process's computation thread count is also pinned to 1 (see
-% below) -- without this, the converged result was found to vary by
-% processor count (not just rounding-level), because MATLAB's internal
-% multi-threaded linear algebra behaves differently depending on how many
-% parfor workers are competing for cores. Confirmed by a direct diagnostic:
-% pinned N=1 and N=8 agreed exactly; unpinned they did not.
+%% RUN_PARALLEL_1TIMESTEP_THREADPIN
+% Diagnostic variant: identical to run_parallel_1timestep.m, but explicitly
+% pins the main process's internal computation thread count to 1 regardless
+% of NUM_PROCS, to test whether processor-count-dependent BLAS/LAPACK
+% threading behavior (in the big system-level linear solves inside fsolve,
+% not the small per-element assembly this task parallelized) explains why
+% the converged result differs across processor counts (426 Pa at N=1 vs.
+% 2533 Pa at N=8, while two N=1 runs against each other were bit-identical).
+% If pinning threads makes N=1 and N=8 agree, that confirms the cause and
+% points to a fix; if not, the sensitivity is coming from somewhere else.
 %
 % Outputs (written to the working directory, suffixed by processor count):
-%   out_parallel_1timestep_N<P>.mat   solver output (out struct) + timing
+%   out_parallel_1timestep_threadpin_N<P>.mat   solver output (out struct) + timing
 
 clc;
 clear all;
@@ -33,20 +23,11 @@ if ~isfinite(numProcsEnv) || numProcsEnv < 1
 end
 numProcs = round(numProcsEnv);
 
-% Pin the main process's internal computation thread count to 1, regardless
-% of NUM_PROCS. Without this, MATLAB's internal multi-threaded linear
-% algebra (used by the large system-level solves inside fsolve, not the
-% per-element assembly this task parallelized) behaves differently depending
-% on how many parfor workers are competing for cores, which was found to
-% change the converged result across processor counts (confirmed via a
-% diagnostic: pinning made N=1 and N=8 agree exactly, unpinned they did not
-% -- see verify_all_parfor_under_real_pool.m's sibling diagnostics for the
-% full investigation). Pinning here is what makes the 1/2/4/8/16 comparison
-% valid.
 try
     priorNumThreads = maxNumCompThreads(1); %#ok<NASGU>
+    fprintf('Pinned main-process computation threads to 1 (was %d).\n', priorNumThreads);
 catch ME
-    warning('maxNumCompThreads not available/settable in this MATLAB version: %s', ME.message);
+    fprintf('maxNumCompThreads not available/settable in this MATLAB version: %s\n', ME.message);
 end
 
 pool = gcp('nocreate');
@@ -101,7 +82,7 @@ plotGlobalDomainSchematic = false;
 makeLegacyPlots = false;
 
 saveOutput = false;
-outputFile = fullfile(softlubeDir, sprintf('simulation_output_parallel_1timestep_N%d.mat', numProcs));
+outputFile = fullfile(softlubeDir, sprintf('simulation_output_parallel_1timestep_threadpin_N%d.mat', numProcs));
 
 closeFiguresAtStart = true;
 printEvery = 1;
@@ -261,7 +242,7 @@ fprintf('   wall-clock     = %.3f s\n', wallClockSeconds);
 
 out.cfg = cfg;
 out.numProcs = numProcs;
-outFileName = sprintf('out_parallel_1timestep_N%d.mat', numProcs);
+outFileName = sprintf('out_parallel_1timestep_threadpin_N%d.mat', numProcs);
 save(outFileName, 'out', 'wallClockSeconds', 'numProcs');
 
 fprintf('\nSaved: %s\n', outFileName);
