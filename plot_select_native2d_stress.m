@@ -19,6 +19,10 @@ function plot_select_native2d_stress(out, plotstep)
 %    FIXED: Verified function invocation strictly matches the 5-argument 
 %    signature (mesh, u, uOld, dt, par) for both solid domains.
 % -------------------------------------------------------------------------
+% Ensure z grid is present for axis calculations
+    if ~isfield(out, 'z') && isfield(out, 'meshE') && isfield(out.meshE, 'nodes')
+        out.z = out.meshE.nodes(:,2);
+    end
 
 fluid = out.fluidHist{plotstep};
 
@@ -140,7 +144,7 @@ solidStressL = { ...
 % ---------------------------------------------------------
 % Create four plots in one figure
 % ---------------------------------------------------------
-figure;
+%figure;
 
 tiledlayout(2, 2, ...
     'TileSpacing', 'compact', ...
