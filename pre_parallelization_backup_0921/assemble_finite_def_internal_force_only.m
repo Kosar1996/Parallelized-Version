@@ -1,20 +1,13 @@
 function Fint = assemble_finite_def_internal_force_only(mesh, u, par)
-% Parallelized version (parfor over elements, cell-array sliced output --
-% see assemble_finite_def_axisym.m for why a computed-range slice isn't
-% parfor-classifiable). Reapplied 9/21 on top of the codebase synced from
-% the 9/21 production update; physics below is exactly as synced, only
-% the accumulation/loop structure changed for parfor safety.
 
     ndof = size(mesh.nodes,1)*2;
+    Fint = zeros(ndof,1);
     useCache = isfield(mesh, 'axisymCache');
     if useCache
         cache = mesh.axisymCache;
     end
 
-    dofsCell = cell(mesh.nelem, 1);
-    feCell = cell(mesh.nelem, 1);
-
-    parfor e = 1:mesh.nelem
+    for e = 1:mesh.nelem
         if useCache
             dofs = cache.dofs(e,:).';
             fe = finite_def_element_residual_only_cached(cache, e, u(dofs), par);
@@ -24,18 +17,8 @@ function Fint = assemble_finite_def_internal_force_only(mesh, u, par)
             dofs = reshape([2*conn-1; 2*conn], [], 1);
             fe = finite_def_element_residual_only(Xe, u(dofs), mesh, par);
         end
-        dofsCell{e} = dofs;
-        feCell{e} = fe;
+        Fint(dofs) = Fint(dofs) + fe;
     end
-
-    iF = zeros(mesh.nelem * 8, 1);
-    vF = zeros(mesh.nelem * 8, 1);
-    for e = 1:mesh.nelem
-        loc = (8*(e-1)+1):(8*e);
-        iF(loc) = dofsCell{e};
-        vF(loc) = feCell{e};
-    end
-    Fint = accumarray(iF, vF, [ndof, 1]);
 end
 
 function fe = finite_def_element_residual_only_cached(cache, e, ue, par)

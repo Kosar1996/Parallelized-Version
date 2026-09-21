@@ -1,36 +1,22 @@
 function [Fint, K] = assemble_finite_def_axisym(mesh, u, par)
-% Parallelized version (parfor over elements, cell-array sliced output --
-% a computed-range slice through an intermediate variable isn't
-% parfor-classifiable, so each element writes to its own cell instead,
-% unpacked into the flat accumarray/sparse inputs by a cheap serial loop
-% afterward). Reapplied 9/21 on top of the codebase synced from the 9/21
-% production update; physics below (including the Neo-Hookean J^(-2/3)
-% fix, inlined tangent-trace product, and line-search dt_phys prep) is
-% exactly as synced, only the accumulation/loop structure changed for
-% parfor safety.
 
     ndof = size(mesh.nodes,1)*2;
+    Fint = zeros(ndof,1);
     useCache = isfield(mesh, 'axisymCache');
     if useCache
         cache = mesh.axisymCache;
         iK = cache.iK;
         jK = cache.jK;
+        vK = zeros(size(iK));
     else
         nnzLocal = mesh.nelem * 64;
         iK = zeros(nnzLocal,1);
         jK = zeros(nnzLocal,1);
-    end
-    vK = zeros(size(iK));
-
-    dofsCell = cell(mesh.nelem, 1);
-    feCell = cell(mesh.nelem, 1);
-    KeCell = cell(mesh.nelem, 1);
-    if ~useCache
-        iiCell = cell(mesh.nelem, 1);
-        jjCell = cell(mesh.nelem, 1);
+        vK = zeros(nnzLocal,1);
+        ptr = 1;
     end
 
-    parfor e = 1:mesh.nelem
+    for e = 1:mesh.nelem
         if useCache
             dofs = cache.dofs(e,:).';
             [fe, Ke] = finite_def_element_residual_tangent_cached( ...
@@ -42,33 +28,19 @@ function [Fint, K] = assemble_finite_def_axisym(mesh, u, par)
             [fe, Ke] = finite_def_element_residual_tangent(Xe, u(dofs), mesh, par);
         end
 
-        dofsCell{e} = dofs;
-        feCell{e} = fe;
-        KeCell{e} = Ke;
-        if ~useCache
+        Fint(dofs) = Fint(dofs) + fe;
+        if useCache
+            loc = (64*(e-1)+1):(64*e);
+        else
             [ii, jj] = ndgrid(dofs, dofs);
-            iiCell{e} = ii(:);
-            jjCell{e} = jj(:);
+            loc = ptr:(ptr + 63);
+            iK(loc) = ii(:);
+            jK(loc) = jj(:);
+            ptr = ptr + 64;
         end
+        vK(loc) = Ke(:);
     end
 
-    iF = zeros(mesh.nelem * 8, 1);
-    vF = zeros(mesh.nelem * 8, 1);
-
-    for e = 1:mesh.nelem
-        locF = (8*(e-1)+1):(8*e);
-        iF(locF) = dofsCell{e};
-        vF(locF) = feCell{e};
-
-        locK = (64*(e-1)+1):(64*e);
-        if ~useCache
-            iK(locK) = iiCell{e};
-            jK(locK) = jjCell{e};
-        end
-        vK(locK) = KeCell{e}(:);
-    end
-
-    Fint = accumarray(iF, vF, [ndof, 1]);
     K = sparse(iK, jK, vK, ndof, ndof);
 end
 

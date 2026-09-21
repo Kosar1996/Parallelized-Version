@@ -4,13 +4,6 @@
 %   par.useViscoelasticEndothelium or mapped leukocyte flags (par.useViscoelastic).
 % - Lines 130-136 & 185-191 (Issue 1): Guarded rate calculations (F - Fold)/dt and
 %   tangent factors (etaE/dt) inside element residual-tangent routines against zero dt.
-%
-% PARALLELIZED (9/21): parfor over elements, cell-array sliced output -- a
-% computed-range slice through an intermediate variable isn't
-% parfor-classifiable, so each element writes to its own cell instead,
-% unpacked into the flat accumarray/sparse inputs by a cheap serial loop
-% afterward. Physics/guards above are exactly as synced from the 9/21
-% production update, only the accumulation/loop structure changed.
 
 function [Fvisc, Kvisc] = assemble_axisym_kelvin_voigt_viscous(mesh, u, uOld, par)
     ndof = size(mesh.nodes,1)*2;
@@ -48,22 +41,16 @@ function [Fvisc, Kvisc] = assemble_axisym_kelvin_voigt_viscous(mesh, u, uOld, pa
         cache = mesh.axisymCache;
         iK = cache.iK;
         jK = cache.jK;
+        vK = zeros(size(iK));
     else
         nnzLocal = mesh.nelem * 64;
         iK = zeros(nnzLocal,1);
         jK = zeros(nnzLocal,1);
-    end
-    vK = zeros(size(iK));
-
-    dofsCell = cell(mesh.nelem, 1);
-    feCell = cell(mesh.nelem, 1);
-    KeCell = cell(mesh.nelem, 1);
-    if ~useCache
-        iiCell = cell(mesh.nelem, 1);
-        jjCell = cell(mesh.nelem, 1);
+        vK = zeros(nnzLocal,1);
+        ptr = 1;
     end
 
-    parfor e = 1:mesh.nelem
+    for e = 1:mesh.nelem
         if useCache
             dofs = cache.dofs(e,:).';
             [fe, Ke] = kelvin_voigt_element_residual_tangent_cached( ...
@@ -76,33 +63,19 @@ function [Fvisc, Kvisc] = assemble_axisym_kelvin_voigt_viscous(mesh, u, uOld, pa
                 Xe, u(dofs), uOld(dofs), mesh, par);
         end
 
-        dofsCell{e} = dofs;
-        feCell{e} = fe;
-        KeCell{e} = Ke;
-        if ~useCache
+        Fvisc(dofs) = Fvisc(dofs) + fe;
+        if useCache
+            loc = (64*(e-1)+1):(64*e);
+        else
             [ii, jj] = ndgrid(dofs, dofs);
-            iiCell{e} = ii(:);
-            jjCell{e} = jj(:);
+            loc = ptr:(ptr + 63);
+            iK(loc) = ii(:);
+            jK(loc) = jj(:);
+            ptr = ptr + 64;
         end
+        vK(loc) = Ke(:);
     end
 
-    iF = zeros(mesh.nelem * 8, 1);
-    vF = zeros(mesh.nelem * 8, 1);
-
-    for e = 1:mesh.nelem
-        locF = (8*(e-1)+1):(8*e);
-        iF(locF) = dofsCell{e};
-        vF(locF) = feCell{e};
-
-        locK = (64*(e-1)+1):(64*e);
-        if ~useCache
-            iK(locK) = iiCell{e};
-            jK(locK) = jjCell{e};
-        end
-        vK(locK) = KeCell{e}(:);
-    end
-
-    Fvisc = accumarray(iF, vF, [ndof, 1]);
     Kvisc = sparse(iK, jK, vK, ndof, ndof);
 end
 
