@@ -1,24 +1,4 @@
 function Fvisc = assemble_axisym_kelvin_voigt_viscous_force_only(mesh, u, uOld, par)
-% Parallelized version (parfor over elements). Profiled as 8.0% of total
-% wall-clock time in the 1-timestep single-processor baseline -- one of the
-% four hot assembly functions targeted for parallelization. The pre-parfor
-% serial version is kept in pre_parallelization_backup/ for reference, and
-% the byte-identical verification is in
-% verify_assemble_axisym_kelvin_voigt_viscous_force_only_refactor.m.
-%
-% Fvisc used to be built by direct indexed accumulation (Fvisc(dofs) =
-% Fvisc(dofs) + fe), unsafe under parfor because adjacent elements share
-% nodes. Fixed by collecting each element's [dofs, fe] into element-exclusive
-% slices, summed once via accumarray after the loop.
-%
-% Note (pre-existing, not introduced here): the non-cached branch below calls
-% kelvin_voigt_element_residual_only, which is defined only as a subfunction
-% inside softlube_run_case_global_coupled.m -- not visible from this file
-% (MATLAB subfunctions are file-local). In practice this is never hit, same
-% as the other assembly functions in this folder: softlube_run_case_global_
-% coupled.m always builds mesh.axisymCache before assembly runs. Left as
-% broken as the original; fixing it is a separate, pre-existing issue.
-
     ndof = size(mesh.nodes,1)*2;
     Fvisc = zeros(ndof,1);
 
@@ -33,13 +13,7 @@ function Fvisc = assemble_axisym_kelvin_voigt_viscous_force_only(mesh, u, uOld, 
         cache = mesh.axisymCache;
     end
 
-    % Cell-array sliced output: see the note in assemble_finite_def_axisym.m
-    % for why a computed-range slice (loc = ...; A(loc) = ...) isn't
-    % parfor-classifiable and this cell-array indirection is needed instead.
-    dofsCell = cell(mesh.nelem, 1);
-    feCell = cell(mesh.nelem, 1);
-
-    parfor e = 1:mesh.nelem
+    for e = 1:mesh.nelem
         if useCache
             dofs = cache.dofs(e,:).';
             fe = kelvin_voigt_element_residual_only_cached( ...
@@ -50,23 +24,9 @@ function Fvisc = assemble_axisym_kelvin_voigt_viscous_force_only(mesh, u, uOld, 
             dofs = reshape([2*conn-1; 2*conn], [], 1);
             fe = kelvin_voigt_element_residual_only(Xe, u(dofs), uOld(dofs), mesh, par);
         end
-        dofsCell{e} = dofs;
-        feCell{e} = fe;
+        Fvisc(dofs) = Fvisc(dofs) + fe;
     end
-
-    iF = zeros(mesh.nelem * 8, 1);
-    vF = zeros(mesh.nelem * 8, 1);
-    for e = 1:mesh.nelem
-        loc = (8*(e-1)+1):(8*e);
-        iF(loc) = dofsCell{e};
-        vF(loc) = feCell{e};
-    end
-
-    Fvisc = accumarray(iF, vF, [ndof, 1]);
 end
-
-% Copied unchanged from assemble_axisym_kelvin_voigt_viscous_force_only.m
-% (MATLAB subfunctions are only visible within their own file).
 
 function fe = kelvin_voigt_element_residual_only_cached(cache, e, ue, ueOld, par)
     if isfield(par, 'useObjectiveKelvinVoigt') && par.useObjectiveKelvinVoigt

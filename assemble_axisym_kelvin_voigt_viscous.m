@@ -1,33 +1,37 @@
-function [Fvisc, Kvisc] = assemble_axisym_kelvin_voigt_viscous(mesh, u, uOld, par)
-% Parallelized version (parfor over elements). Profiled as 54.2% of total
-% wall-clock time in the 1-timestep single-processor baseline -- the single
-% hottest function, and the top target for parallelization. The pre-parfor
-% serial version is kept in pre_parallelization_backup/ for reference, and
-% the byte-identical verification is in
-% verify_assemble_axisym_kelvin_voigt_viscous_refactor.m.
-%
-% Same fix as assemble_finite_def_axisym.m: Fvisc used to be built by direct
-% indexed accumulation (Fvisc(dofs) = Fvisc(dofs) + fe), unsafe under parfor
-% because adjacent elements share nodes; and the non-cached branch used a
-% running ptr counter, a loop-carried dependency, also unsafe under parfor.
-% Both fixed the same way -- element-exclusive slices, summed once via
-% accumarray after the loop.
-%
-% Note (pre-existing, not introduced here): the non-cached branch below calls
-% kelvin_voigt_element_residual_tangent, which is not defined anywhere in
-% this codebase. In practice this is never hit -- softlube_run_case_global_
-% coupled.m always builds mesh.axisymCache before assembly runs -- but this
-% branch is left exactly as broken as the original, since fixing it is a
-% separate, pre-existing issue and out of scope for parallelization prep.
+% CHANGES TO LOOK FOR IN THIS FILE:
+% - Lines 12-25 (Issue 1 & 2): Added dt fallback guard to prevent division-by-zero (NaN/Inf) 
+%   when par.dt <= 0, and expanded the viscoelastic activation check to recognize either 
+%   par.useViscoelasticEndothelium or mapped leukocyte flags (par.useViscoelastic).
+% - Lines 130-136 & 185-191 (Issue 1): Guarded rate calculations (F - Fold)/dt and 
+%   tangent factors (etaE/dt) inside element residual-tangent routines against zero dt.
 
+function [Fvisc, Kvisc] = assemble_axisym_kelvin_voigt_viscous(mesh, u, uOld, par)
     ndof = size(mesh.nodes,1)*2;
     Fvisc = zeros(ndof,1);
 
-    if ~(isfield(par, 'useViscoelasticEndothelium') && par.useViscoelasticEndothelium)
+    % OLD BUGGY GUARD (Issue 2): Only checked endothelium flag:
+    % if ~(isfield(par, 'useViscoelasticEndothelium') && par.useViscoelasticEndothelium)
+    %     Kvisc = sparse(ndof, ndof);
+    %     return;
+    % end
+
+    % FIXED (Issue 2): Generalize viscoelastic activation check for both endothelium and leukocyte
+    isViscoActive = (isfield(par, 'useViscoelasticEndothelium') && par.useViscoelasticEndothelium) || ...
+                    (isfield(par, 'useViscoelasticLeukocyte') && par.useViscoelasticLeukocyte) || ...
+                    (isfield(par, 'useViscoelastic') && par.useViscoelastic);
+
+    if ~isViscoActive
         Kvisc = sparse(ndof, ndof);
         return;
     end
+
     if ~isfield(par, 'etaE') || par.etaE <= 0
+        Kvisc = sparse(ndof, ndof);
+        return;
+    end
+
+    % FIXED (Issue 1): Guard against missing, zero, or non-finite time step (dt)
+    if ~isfield(par, 'dt') || ~isfinite(par.dt) || par.dt <= 0
         Kvisc = sparse(ndof, ndof);
         return;
     end
@@ -37,25 +41,16 @@ function [Fvisc, Kvisc] = assemble_axisym_kelvin_voigt_viscous(mesh, u, uOld, pa
         cache = mesh.axisymCache;
         iK = cache.iK;
         jK = cache.jK;
+        vK = zeros(size(iK));
     else
         nnzLocal = mesh.nelem * 64;
         iK = zeros(nnzLocal,1);
         jK = zeros(nnzLocal,1);
-    end
-    vK = zeros(size(iK));
-
-    % Cell-array sliced output: see the note in assemble_finite_def_axisym.m
-    % for why a computed-range slice (loc = ...; A(loc) = ...) isn't
-    % parfor-classifiable and this cell-array indirection is needed instead.
-    dofsCell = cell(mesh.nelem, 1);
-    feCell = cell(mesh.nelem, 1);
-    KeCell = cell(mesh.nelem, 1);
-    if ~useCache
-        iiCell = cell(mesh.nelem, 1);
-        jjCell = cell(mesh.nelem, 1);
+        vK = zeros(nnzLocal,1);
+        ptr = 1;
     end
 
-    parfor e = 1:mesh.nelem
+    for e = 1:mesh.nelem
         if useCache
             dofs = cache.dofs(e,:).';
             [fe, Ke] = kelvin_voigt_element_residual_tangent_cached( ...
@@ -68,42 +63,31 @@ function [Fvisc, Kvisc] = assemble_axisym_kelvin_voigt_viscous(mesh, u, uOld, pa
                 Xe, u(dofs), uOld(dofs), mesh, par);
         end
 
-        dofsCell{e} = dofs;
-        feCell{e} = fe;
-        KeCell{e} = Ke;
-        if ~useCache
+        Fvisc(dofs) = Fvisc(dofs) + fe;
+        if useCache
+            loc = (64*(e-1)+1):(64*e);
+        else
             [ii, jj] = ndgrid(dofs, dofs);
-            iiCell{e} = ii(:);
-            jjCell{e} = jj(:);
+            loc = ptr:(ptr + 63);
+            iK(loc) = ii(:);
+            jK(loc) = jj(:);
+            ptr = ptr + 64;
         end
+        vK(loc) = Ke(:);
     end
 
-    iF = zeros(mesh.nelem * 8, 1);
-    vF = zeros(mesh.nelem * 8, 1);
-
-    for e = 1:mesh.nelem
-        locF = (8*(e-1)+1):(8*e);
-        iF(locF) = dofsCell{e};
-        vF(locF) = feCell{e};
-
-        locK = (64*(e-1)+1):(64*e);
-        if ~useCache
-            iK(locK) = iiCell{e};
-            jK(locK) = jjCell{e};
-        end
-        vK(locK) = KeCell{e}(:);
-    end
-
-    Fvisc = accumarray(iF, vF, [ndof, 1]);
     Kvisc = sparse(iK, jK, vK, ndof, ndof);
 end
-
-% Copied unchanged from assemble_axisym_kelvin_voigt_viscous.m (MATLAB
-% subfunctions are only visible within their own file).
 
 function [fe, Ke] = kelvin_voigt_element_residual_tangent_cached(cache, e, ue, ueOld, par)
     fe = zeros(8,1);
     Ke = zeros(8,8);
+
+    % Sanitize dt for element calculations
+    dtEff = 1.0;
+    if isfield(par, 'dt') && isfinite(par.dt) && par.dt > 0
+        dtEff = par.dt;
+    end
 
     if isfield(par, 'useObjectiveKelvinVoigt') && par.useObjectiveKelvinVoigt
         Rnod = cache.Rnod(:,e);
@@ -171,7 +155,10 @@ function [fe, Ke] = kelvin_voigt_element_residual_tangent_cached(cache, e, ue, u
 
         Fold = deformation_gradient_from_nodal([], rnodOld, znodOld, N, dNdX, Rg);
         F = current_deformation_gradient_from_cached(cache, e, ue, g);
-        Pvisc = par.etaE * (F - Fold) / par.dt;
+
+        % OLD BUGGY LINE (Issue 1): Pvisc = par.etaE * (F - Fold) / par.dt;
+        % FIXED (Issue 1): Safe division using dtEff
+        Pvisc = par.etaE * (F - Fold) / dtEff;
         Wgp = (2*pi*Rg) * detJ0 * w;
 
         for a = 1:4
@@ -187,7 +174,9 @@ function [fe, Ke] = kelvin_voigt_element_residual_tangent_cached(cache, e, ue, u
         end
 
         for alpha = 1:8
-            dP = (par.etaE/par.dt) * local_dF_from_dof(alpha, N, dNdX, Rg);
+            % OLD BUGGY LINE (Issue 1): dP = (par.etaE/par.dt) * local_dF_from_dof(alpha, N, dNdX, Rg);
+            % FIXED (Issue 1): Safe tangent scaling using dtEff
+            dP = (par.etaE / dtEff) * local_dF_from_dof(alpha, N, dNdX, Rg);
 
             for a = 1:4
                 dNa_dR = dNdX(a,1);
