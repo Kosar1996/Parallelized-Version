@@ -11,7 +11,7 @@ pctRunOnAll addpath(softlubeDir);
 % Suppress hardware graphics warning across all parallel workers
 pctRunOnAll warning('off', 'MATLAB:graphics:noGraphicsAcceleration');
 
-inputname = fullfile(softlubeDir, 'case_7q_restarted.mat');
+inputname = fullfile(softlubeDir, 'case_0_b.mat');
 
 % Call the parallel generator (file, label, output_dir, fps)
-generate_heatmap_videos_parallel(inputname, 'case_7_q_restarted_parallel', 'videos/', 5);
+generate_heatmap_videos_parallel(inputname, 'case_7_s', 'videos/', 5);
