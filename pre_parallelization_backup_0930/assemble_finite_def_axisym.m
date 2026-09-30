@@ -1,33 +1,22 @@
 function [Fint, K] = assemble_finite_def_axisym(mesh, u, par)
-% PARALLELIZATION (0930): element loop converted to parfor. Each element
-% writes its results to its own cell (parfor-sliced output); a serial loop
-% afterward accumulates them in the SAME element order and with the SAME
-% arithmetic as the original serial loop, so results are bit-identical to
-% the serial code for any number of workers. Element physics (subfunctions
-% below) is unchanged from Leukocyte_Main_Files-0928_v2.
 
     ndof = size(mesh.nodes,1)*2;
     Fint = zeros(ndof,1);
     useCache = isfield(mesh, 'axisymCache');
-    nelem = mesh.nelem;
     if useCache
         cache = mesh.axisymCache;
         iK = cache.iK;
         jK = cache.jK;
         vK = zeros(size(iK));
     else
-        cache = [];
-        nnzLocal = nelem * 64;
+        nnzLocal = mesh.nelem * 64;
         iK = zeros(nnzLocal,1);
         jK = zeros(nnzLocal,1);
         vK = zeros(nnzLocal,1);
+        ptr = 1;
     end
 
-    dofsCell = cell(nelem,1);
-    feCell   = cell(nelem,1);
-    KeCell   = cell(nelem,1);
-
-    parfor e = 1:nelem
+    for e = 1:mesh.nelem
         if useCache
             dofs = cache.dofs(e,:).';
             [fe, Ke] = finite_def_element_residual_tangent_cached( ...
@@ -38,16 +27,8 @@ function [Fint, K] = assemble_finite_def_axisym(mesh, u, par)
             dofs = reshape([2*conn-1; 2*conn], [], 1);
             [fe, Ke] = finite_def_element_residual_tangent(Xe, u(dofs), mesh, par);
         end
-        dofsCell{e} = dofs;
-        feCell{e}   = fe;
-        KeCell{e}   = Ke;
-    end
 
-    % Serial accumulation, identical order/arithmetic to the original loop
-    ptr = 1;
-    for e = 1:nelem
-        dofs = dofsCell{e};
-        Fint(dofs) = Fint(dofs) + feCell{e};
+        Fint(dofs) = Fint(dofs) + fe;
         if useCache
             loc = (64*(e-1)+1):(64*e);
         else
@@ -57,7 +38,7 @@ function [Fint, K] = assemble_finite_def_axisym(mesh, u, par)
             jK(loc) = jj(:);
             ptr = ptr + 64;
         end
-        vK(loc) = KeCell{e}(:);
+        vK(loc) = Ke(:);
     end
 
     K = sparse(iK, jK, vK, ndof, ndof);

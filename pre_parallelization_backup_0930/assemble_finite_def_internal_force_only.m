@@ -1,26 +1,13 @@
 function Fint = assemble_finite_def_internal_force_only(mesh, u, par)
-% PARALLELIZATION (0930): element loop converted to parfor. Each element
-% writes its results to its own cell (parfor-sliced output); a serial loop
-% afterward accumulates them in the SAME element order and with the SAME
-% arithmetic as the original serial loop, so results are bit-identical to
-% the serial code for any number of workers. Element physics (subfunctions
-% below) is unchanged from Leukocyte_Main_Files-0928_v2.
 
     ndof = size(mesh.nodes,1)*2;
     Fint = zeros(ndof,1);
-    % ---- PARALLELIZATION (0930): see header note ----
     useCache = isfield(mesh, 'axisymCache');
-    nelem = mesh.nelem;
     if useCache
         cache = mesh.axisymCache;
-    else
-        cache = [];
     end
 
-    dofsCell = cell(nelem,1);
-    feCell   = cell(nelem,1);
-
-    parfor e = 1:nelem
+    for e = 1:mesh.nelem
         if useCache
             dofs = cache.dofs(e,:).';
             fe = finite_def_element_residual_only_cached(cache, e, u(dofs), par);
@@ -30,14 +17,7 @@ function Fint = assemble_finite_def_internal_force_only(mesh, u, par)
             dofs = reshape([2*conn-1; 2*conn], [], 1);
             fe = finite_def_element_residual_only(Xe, u(dofs), mesh, par);
         end
-        dofsCell{e} = dofs;
-        feCell{e}   = fe;
-    end
-
-    % Serial accumulation, identical order/arithmetic to the original loop
-    for e = 1:nelem
-        dofs = dofsCell{e};
-        Fint(dofs) = Fint(dofs) + feCell{e};
+        Fint(dofs) = Fint(dofs) + fe;
     end
 end
 
