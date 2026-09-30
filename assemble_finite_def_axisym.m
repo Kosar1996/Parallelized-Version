@@ -1,36 +1,22 @@
 function [Fint, K] = assemble_finite_def_axisym(mesh, u, par)
-% Parallelized version (parfor over elements, cell-array sliced output --
-% a computed-range slice through an intermediate variable isn't
-% parfor-classifiable, so each element writes to its own cell instead,
-% unpacked into the flat accumarray/sparse inputs by a cheap serial loop
-% afterward). Reapplied 9/21 on top of the codebase synced from the 9/21
-% production update; physics below (including the Neo-Hookean J^(-2/3)
-% fix, inlined tangent-trace product, and line-search dt_phys prep) is
-% exactly as synced, only the accumulation/loop structure changed for
-% parfor safety.
 
     ndof = size(mesh.nodes,1)*2;
+    Fint = zeros(ndof,1);
     useCache = isfield(mesh, 'axisymCache');
     if useCache
         cache = mesh.axisymCache;
         iK = cache.iK;
         jK = cache.jK;
+        vK = zeros(size(iK));
     else
         nnzLocal = mesh.nelem * 64;
         iK = zeros(nnzLocal,1);
         jK = zeros(nnzLocal,1);
-    end
-    vK = zeros(size(iK));
-
-    dofsCell = cell(mesh.nelem, 1);
-    feCell = cell(mesh.nelem, 1);
-    KeCell = cell(mesh.nelem, 1);
-    if ~useCache
-        iiCell = cell(mesh.nelem, 1);
-        jjCell = cell(mesh.nelem, 1);
+        vK = zeros(nnzLocal,1);
+        ptr = 1;
     end
 
-    parfor e = 1:mesh.nelem
+    for e = 1:mesh.nelem
         if useCache
             dofs = cache.dofs(e,:).';
             [fe, Ke] = finite_def_element_residual_tangent_cached( ...
@@ -42,33 +28,19 @@ function [Fint, K] = assemble_finite_def_axisym(mesh, u, par)
             [fe, Ke] = finite_def_element_residual_tangent(Xe, u(dofs), mesh, par);
         end
 
-        dofsCell{e} = dofs;
-        feCell{e} = fe;
-        KeCell{e} = Ke;
-        if ~useCache
+        Fint(dofs) = Fint(dofs) + fe;
+        if useCache
+            loc = (64*(e-1)+1):(64*e);
+        else
             [ii, jj] = ndgrid(dofs, dofs);
-            iiCell{e} = ii(:);
-            jjCell{e} = jj(:);
+            loc = ptr:(ptr + 63);
+            iK(loc) = ii(:);
+            jK(loc) = jj(:);
+            ptr = ptr + 64;
         end
+        vK(loc) = Ke(:);
     end
 
-    iF = zeros(mesh.nelem * 8, 1);
-    vF = zeros(mesh.nelem * 8, 1);
-
-    for e = 1:mesh.nelem
-        locF = (8*(e-1)+1):(8*e);
-        iF(locF) = dofsCell{e};
-        vF(locF) = feCell{e};
-
-        locK = (64*(e-1)+1):(64*e);
-        if ~useCache
-            iK(locK) = iiCell{e};
-            jK(locK) = jjCell{e};
-        end
-        vK(locK) = KeCell{e}(:);
-    end
-
-    Fint = accumarray(iF, vF, [ndof, 1]);
     K = sparse(iK, jK, vK, ndof, ndof);
 end
 
@@ -96,18 +68,41 @@ function [fe, Ke] = finite_def_element_residual_tangent_cached(cache, e, ue, par
 
         rg = N * rnod;
 
-        if Rg <= 0 || rg <= 0
-            error('Non-positive radius encountered in finite-deformation element.');
-        end
+        % if Rg <= 0 || rg <= 0
+        %     error('Non-positive radius encountered in finite-deformation element.');
+        % end
+        % 
+        % drdR = dNdX(:,1).' * rnod;
+        % drdZ = dNdX(:,2).' * rnod;
+        % dzdR = dNdX(:,1).' * znod;
+        % dzdZ = dNdX(:,2).' * znod;
+        % 
+        % F = [drdR,   0,    drdZ;
+        %        0,   rg/Rg, 0;
+        %      dzdR,   0,    dzdZ];
+
+        % ========================= NEW CODE ==============================
+        % Centerline Regularization & L'Hopital Safeguards
+        epsR = 1e-14;
+        Rg_eff = max(Rg, epsR);
+        rg_eff = max(rg, epsR);
 
         drdR = dNdX(:,1).' * rnod;
         drdZ = dNdX(:,2).' * rnod;
         dzdR = dNdX(:,1).' * znod;
         dzdZ = dNdX(:,2).' * znod;
 
+        % L'Hopital Limit for Hoop Stretch (lim_{R->0} r/R = dr/dR on axis)
+        if Rg < 1e-10
+            F22 = drdR;
+        else
+            F22 = rg_eff / Rg_eff;
+        end
+
         F = [drdR,   0,    drdZ;
-               0,   rg/Rg, 0;
+               0,   F22,   0;
              dzdR,   0,    dzdZ];
+        % =================================================================
 
         J = det(F);
         if J <= 0
@@ -124,32 +119,50 @@ function [fe, Ke] = finite_def_element_residual_tangent_cached(cache, e, ue, par
         aIso = J^(-2/3);
         T = par.Ge * aIso * devB + par.Ke * (J - 1) * I3;
         P = J * T * FinvT;
-        Wgp = (2*pi*Rg) * detJ0 * w;
+        %Wgp = (2*pi*Rg) * detJ0 * w;
+        % ========================= NEW CODE ==============================
+        Wgp = (2*pi*Rg_eff) * detJ0 * w;
+        % =================================================================
 
         for a = 1:4
             dNa_dR = dNdX(a,1);
             dNa_dZ = dNdX(a,2);
             Na     = N(a);
 
+            % fe(2*a-1) = fe(2*a-1) + ...
+            %     ( P(1,1)*dNa_dR + P(1,3)*dNa_dZ + P(2,2)*(Na/Rg) ) * Wgp;
+
+            % ========================= NEW CODE ==============================
+            % L'Hopital Limit for Na/Rg shape function ratio
+            if Rg < 1e-10
+                Na_over_Rg = dNa_dR;
+            else
+                Na_over_Rg = Na / Rg_eff;
+            end
+
             fe(2*a-1) = fe(2*a-1) + ...
-                ( P(1,1)*dNa_dR + P(1,3)*dNa_dZ + P(2,2)*(Na/Rg) ) * Wgp;
+                ( P(1,1)*dNa_dR + P(1,3)*dNa_dZ + P(2,2)*Na_over_Rg ) * Wgp;
+            % =================================================================
 
             fe(2*a) = fe(2*a) + ...
                 ( P(3,1)*dNa_dR + P(3,3)*dNa_dZ ) * Wgp;
         end
 
         for alpha = 1:8
-            dF = local_dF_from_dof(alpha, N, dNdX, Rg);
+            %dF = local_dF_from_dof(alpha, N, dNdX, Rg);
+            % NEW CODE:
+dF = local_dF_from_dof(alpha, N, dNdX, Rg_eff);
+
 
             % TANGENT TRACE FIX: In-lined scalar product (eliminates sum(sum(...)))
             trFinv_dF = dF(1,1)*Finv(1,1) + dF(1,3)*Finv(3,1) + ...
                         dF(2,2)*Finv(2,2) + dF(3,1)*Finv(1,3) + dF(3,3)*Finv(3,3);
-
+            
             dJ = J * trFinv_dF;
             dB = dF * F.' + F * dF.';
             trdB = dB(1,1) + dB(2,2) + dB(3,3);
             dDevB = dB - (trdB/3)*I3;
-
+            
             % KINEMATIC SCALING FIX: Derivative of J^(-2/3)
             daIso = -(2/3) * aIso * trFinv_dF;
 
@@ -163,8 +176,19 @@ function [fe, Ke] = finite_def_element_residual_tangent_cached(cache, e, ue, par
                 dNa_dZ = dNdX(a,2);
                 Na     = N(a);
 
+                % Ke(2*a-1, alpha) = Ke(2*a-1, alpha) + ...
+                %     ( dP(1,1)*dNa_dR + dP(1,3)*dNa_dZ + dP(2,2)*(Na/Rg) ) * Wgp;
+
+                % ========================= NEW CODE ==============================
+                if Rg < 1e-10
+                    Na_over_Rg = dNa_dR;
+                else
+                    Na_over_Rg = Na / Rg_eff;
+                end
+
                 Ke(2*a-1, alpha) = Ke(2*a-1, alpha) + ...
-                    ( dP(1,1)*dNa_dR + dP(1,3)*dNa_dZ + dP(2,2)*(Na/Rg) ) * Wgp;
+                    ( dP(1,1)*dNa_dR + dP(1,3)*dNa_dZ + dP(2,2)*Na_over_Rg ) * Wgp;
+                % =================================================================
 
                 Ke(2*a, alpha) = Ke(2*a, alpha) + ...
                     ( dP(3,1)*dNa_dR + dP(3,3)*dNa_dZ ) * Wgp;
@@ -200,18 +224,39 @@ function [fe, Ke] = finite_def_element_residual_tangent(Xe, ue, mesh, par)
         Rg = N * Rnod;
         rg = N * rnod;
 
-        if Rg <= 0 || rg <= 0
-            error('Non-positive radius encountered in finite-deformation element.');
-        end
+        % if Rg <= 0 || rg <= 0
+        %     error('Non-positive radius encountered in finite-deformation element.');
+        % end
+        % 
+        % drdR = dNdX(:,1).' * rnod;
+        % drdZ = dNdX(:,2).' * rnod;
+        % dzdR = dNdX(:,1).' * znod;
+        % dzdZ = dNdX(:,2).' * znod;
+        % 
+        % F = [drdR,   0,    drdZ;
+        %        0,   rg/Rg, 0;
+        %      dzdR,   0,    dzdZ];
+
+        % ========================= NEW CODE ==============================
+        epsR = 1e-14;
+        Rg_eff = max(Rg, epsR);
+        rg_eff = max(rg, epsR);
 
         drdR = dNdX(:,1).' * rnod;
         drdZ = dNdX(:,2).' * rnod;
         dzdR = dNdX(:,1).' * znod;
         dzdZ = dNdX(:,2).' * znod;
 
+        if Rg < 1e-10
+            F22 = drdR;
+        else
+            F22 = rg_eff / Rg_eff;
+        end
+
         F = [drdR,   0,    drdZ;
-               0,   rg/Rg, 0;
+               0,   F22,   0;
              dzdR,   0,    dzdZ];
+        % =================================================================
 
         J = det(F);
         if J <= 0
@@ -229,22 +274,39 @@ function [fe, Ke] = finite_def_element_residual_tangent(Xe, ue, mesh, par)
 
         T = par.Ge * aIso * devB + par.Ke * (J - 1) * I3;
         P = J * T * FinvT;
-        Wgp = (2*pi*Rg) * detJ0 * w;
+        %Wgp = (2*pi*Rg) * detJ0 * w;
+        % ========================= NEW CODE ==============================
+        Wgp = (2*pi*Rg_eff) * detJ0 * w;
+        % =================================================================
 
         for a = 1:4
             dNa_dR = dNdX(a,1);
             dNa_dZ = dNdX(a,2);
             Na     = N(a);
 
+            % fe(2*a-1) = fe(2*a-1) + ...
+            %     ( P(1,1)*dNa_dR + P(1,3)*dNa_dZ + P(2,2)*(Na/Rg) ) * Wgp;
+
+            % ========================= NEW CODE ==============================
+            % L'Hopital Limit for Na/Rg shape function ratio
+            if Rg < 1e-10
+                Na_over_Rg = dNa_dR;
+            else
+                Na_over_Rg = Na / Rg_eff;
+            end
+
             fe(2*a-1) = fe(2*a-1) + ...
-                ( P(1,1)*dNa_dR + P(1,3)*dNa_dZ + P(2,2)*(Na/Rg) ) * Wgp;
+                ( P(1,1)*dNa_dR + P(1,3)*dNa_dZ + P(2,2)*Na_over_Rg ) * Wgp;
+            % =================================================================
 
             fe(2*a) = fe(2*a) + ...
                 ( P(3,1)*dNa_dR + P(3,3)*dNa_dZ ) * Wgp;
         end
 
         for alpha = 1:8
-            dF = local_dF_from_dof(alpha, N, dNdX, Rg);
+            %dF = local_dF_from_dof(alpha, N, dNdX, Rg);
+            % NEW CODE:
+dF = local_dF_from_dof(alpha, N, dNdX, Rg_eff);
 
             % TANGENT TRACE FIX: In-lined scalar product (eliminates sum(sum(...)))
             trFinv_dF = dF(1,1)*Finv(1,1) + dF(1,3)*Finv(3,1) + ...
@@ -270,8 +332,19 @@ function [fe, Ke] = finite_def_element_residual_tangent(Xe, ue, mesh, par)
                 dNa_dZ = dNdX(a,2);
                 Na     = N(a);
 
+                % Ke(2*a-1, alpha) = Ke(2*a-1, alpha) + ...
+                %     ( dP(1,1)*dNa_dR + dP(1,3)*dNa_dZ + dP(2,2)*(Na/Rg) ) * Wgp;
+
+                % ========================= NEW CODE ==============================
+                if Rg < 1e-10
+                    Na_over_Rg = dNa_dR;
+                else
+                    Na_over_Rg = Na / Rg_eff;
+                end
+
                 Ke(2*a-1, alpha) = Ke(2*a-1, alpha) + ...
-                    ( dP(1,1)*dNa_dR + dP(1,3)*dNa_dZ + dP(2,2)*(Na/Rg) ) * Wgp;
+                    ( dP(1,1)*dNa_dR + dP(1,3)*dNa_dZ + dP(2,2)*Na_over_Rg ) * Wgp;
+                % =================================================================
 
                 Ke(2*a, alpha) = Ke(2*a, alpha) + ...
                     ( dP(3,1)*dNa_dR + dP(3,3)*dNa_dZ ) * Wgp;

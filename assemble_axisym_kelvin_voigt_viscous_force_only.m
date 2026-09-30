@@ -1,12 +1,4 @@
 function Fvisc = assemble_axisym_kelvin_voigt_viscous_force_only(mesh, u, uOld, par)
-% Parallelized version (parfor over elements, cell-array sliced output --
-% a computed-range slice through an intermediate variable isn't
-% parfor-classifiable, so each element writes to its own cell instead,
-% unpacked into the flat accumarray input by a cheap serial loop
-% afterward). Reapplied 9/21 on top of the codebase synced from the 9/21
-% production update; physics below is exactly as synced, only the
-% accumulation/loop structure changed for parfor safety.
-
     ndof = size(mesh.nodes,1)*2;
     Fvisc = zeros(ndof,1);
 
@@ -21,10 +13,7 @@ function Fvisc = assemble_axisym_kelvin_voigt_viscous_force_only(mesh, u, uOld, 
         cache = mesh.axisymCache;
     end
 
-    dofsCell = cell(mesh.nelem, 1);
-    feCell = cell(mesh.nelem, 1);
-
-    parfor e = 1:mesh.nelem
+    for e = 1:mesh.nelem
         if useCache
             dofs = cache.dofs(e,:).';
             fe = kelvin_voigt_element_residual_only_cached( ...
@@ -35,18 +24,8 @@ function Fvisc = assemble_axisym_kelvin_voigt_viscous_force_only(mesh, u, uOld, 
             dofs = reshape([2*conn-1; 2*conn], [], 1);
             fe = kelvin_voigt_element_residual_only(Xe, u(dofs), uOld(dofs), mesh, par);
         end
-        dofsCell{e} = dofs;
-        feCell{e} = fe;
+        Fvisc(dofs) = Fvisc(dofs) + fe;
     end
-
-    iF = zeros(mesh.nelem * 8, 1);
-    vF = zeros(mesh.nelem * 8, 1);
-    for e = 1:mesh.nelem
-        loc = (8*(e-1)+1):(8*e);
-        iF(loc) = dofsCell{e};
-        vF(loc) = feCell{e};
-    end
-    Fvisc = accumarray(iF, vF, [ndof, 1]);
 end
 
 function fe = kelvin_voigt_element_residual_only_cached(cache, e, ue, ueOld, par)
