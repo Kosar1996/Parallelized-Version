@@ -22,6 +22,21 @@ java.lang.System.gc();
 addpath(pwd, '-begin');
 clc;
 
+% ===== PARALLEL VERSION: only addition to run_0928.m (1001) =====
+% NUM_PROCS (from the Slurm script): 0 = no pool, >=1 = local pool with that
+% many workers (parfor element loops in the 4 assembly functions).
+% The client is fixed to 2 computational threads = MATLAB's default in a
+% 1-CPU job on node3617 (reference runs), so every N does the same
+% floating-point arithmetic as the reference serial run.
+numProcs = str2double(getenv('NUM_PROCS'));
+if ~isfinite(numProcs), numProcs = 0; end
+maxNumCompThreads(2);
+if numProcs >= 1 && isempty(gcp('nocreate'))
+    parpool('local', numProcs);
+end
+fprintf('\n=== PARALLEL VERSION: NUM_PROCS=%d, client maxNumCompThreads=%d ===\n', numProcs, maxNumCompThreads);
+% =================================================================
+
 fprintf('\n=== MATLAB Function Lookup Diagnostics ===\n');
 which('-all', 'solve_finite_def_solid');
 which('-all', 'apply_bodyfitted_MAC_traction_correction');
@@ -45,6 +60,12 @@ matFilePath = fullfile(softlubeDir, 'case_7_t_step14.mat');
 
 % INPUT 2: Exact timestep index to roll back to and resume from
 targetStep = 13;
+% ----- run options (1001), all optional, set in the Slurm script -----
+%   RESTART_FILE / RESTART_STEP : restart from another checkpoint file/step
+%   FRESH_START=1               : start from t = 0 (no restart file)
+if ~isempty(getenv('RESTART_FILE')), matFilePath = fullfile(softlubeDir, getenv('RESTART_FILE')); end
+if ~isempty(getenv('RESTART_STEP')), targetStep = str2double(getenv('RESTART_STEP')); end
+if strcmp(getenv('FRESH_START'), '1'), matFilePath = fullfile(softlubeDir, 'NO_RESTART_FILE.mat'); end
 
 %% 2. CUSTOMIZABLE PARAMETERS
 dt = 2.5e-6;
