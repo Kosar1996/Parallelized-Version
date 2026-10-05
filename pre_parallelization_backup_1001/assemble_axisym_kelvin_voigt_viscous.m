@@ -6,12 +6,6 @@
 %   tangent factors (etaE/dt) inside element residual-tangent routines against zero dt.
 
 function [Fvisc, Kvisc] = assemble_axisym_kelvin_voigt_viscous(mesh, u, uOld, par)
-% PARALLELIZATION (0930): element loop converted to parfor. Each element
-% writes its results to its own cell (parfor-sliced output); a serial loop
-% afterward accumulates them in the SAME element order and with the SAME
-% arithmetic as the original serial loop, so results are bit-identical to
-% the serial code for any number of workers. Element physics (subfunctions
-% below) is unchanged from Leukocyte_Main_Files-0928_v2.
     ndof = size(mesh.nodes,1)*2;
     Fvisc = zeros(ndof,1);
 
@@ -42,27 +36,21 @@ function [Fvisc, Kvisc] = assemble_axisym_kelvin_voigt_viscous(mesh, u, uOld, pa
         return;
     end
 
-    % ---- PARALLELIZATION (0930): see header note ----
     useCache = isfield(mesh, 'axisymCache');
-    nelem = mesh.nelem;
     if useCache
         cache = mesh.axisymCache;
         iK = cache.iK;
         jK = cache.jK;
         vK = zeros(size(iK));
     else
-        cache = [];
-        nnzLocal = nelem * 64;
+        nnzLocal = mesh.nelem * 64;
         iK = zeros(nnzLocal,1);
         jK = zeros(nnzLocal,1);
         vK = zeros(nnzLocal,1);
+        ptr = 1;
     end
 
-    dofsCell = cell(nelem,1);
-    feCell   = cell(nelem,1);
-    KeCell   = cell(nelem,1);
-
-    parfor e = 1:nelem
+    for e = 1:mesh.nelem
         if useCache
             dofs = cache.dofs(e,:).';
             [fe, Ke] = kelvin_voigt_element_residual_tangent_cached( ...
@@ -74,16 +62,8 @@ function [Fvisc, Kvisc] = assemble_axisym_kelvin_voigt_viscous(mesh, u, uOld, pa
             [fe, Ke] = kelvin_voigt_element_residual_tangent( ...
                 Xe, u(dofs), uOld(dofs), mesh, par);
         end
-        dofsCell{e} = dofs;
-        feCell{e}   = fe;
-        KeCell{e}   = Ke;
-    end
 
-    % Serial accumulation, identical order/arithmetic to the original loop
-    ptr = 1;
-    for e = 1:nelem
-        dofs = dofsCell{e};
-        Fvisc(dofs) = Fvisc(dofs) + feCell{e};
+        Fvisc(dofs) = Fvisc(dofs) + fe;
         if useCache
             loc = (64*(e-1)+1):(64*e);
         else
@@ -93,7 +73,7 @@ function [Fvisc, Kvisc] = assemble_axisym_kelvin_voigt_viscous(mesh, u, uOld, pa
             jK(loc) = jj(:);
             ptr = ptr + 64;
         end
-        vK(loc) = KeCell{e}(:);
+        vK(loc) = Ke(:);
     end
 
     Kvisc = sparse(iK, jK, vK, ndof, ndof);

@@ -1,10 +1,4 @@
 function Fvisc = assemble_axisym_kelvin_voigt_viscous_force_only(mesh, u, uOld, par)
-% PARALLELIZATION (0930): element loop converted to parfor. Each element
-% writes its results to its own cell (parfor-sliced output); a serial loop
-% afterward accumulates them in the SAME element order and with the SAME
-% arithmetic as the original serial loop, so results are bit-identical to
-% the serial code for any number of workers. Element physics (subfunctions
-% below) is unchanged from Leukocyte_Main_Files-0928_v2.
     ndof = size(mesh.nodes,1)*2;
     Fvisc = zeros(ndof,1);
 
@@ -14,19 +8,12 @@ function Fvisc = assemble_axisym_kelvin_voigt_viscous_force_only(mesh, u, uOld, 
     if ~isfield(par, 'etaE') || par.etaE <= 0
         return;
     end
-    % ---- PARALLELIZATION (0930): see header note ----
     useCache = isfield(mesh, 'axisymCache');
-    nelem = mesh.nelem;
     if useCache
         cache = mesh.axisymCache;
-    else
-        cache = [];
     end
 
-    dofsCell = cell(nelem,1);
-    feCell   = cell(nelem,1);
-
-    parfor e = 1:nelem
+    for e = 1:mesh.nelem
         if useCache
             dofs = cache.dofs(e,:).';
             fe = kelvin_voigt_element_residual_only_cached( ...
@@ -37,14 +24,7 @@ function Fvisc = assemble_axisym_kelvin_voigt_viscous_force_only(mesh, u, uOld, 
             dofs = reshape([2*conn-1; 2*conn], [], 1);
             fe = kelvin_voigt_element_residual_only(Xe, u(dofs), uOld(dofs), mesh, par);
         end
-        dofsCell{e} = dofs;
-        feCell{e}   = fe;
-    end
-
-    % Serial accumulation, identical order/arithmetic to the original loop
-    for e = 1:nelem
-        dofs = dofsCell{e};
-        Fvisc(dofs) = Fvisc(dofs) + feCell{e};
+        Fvisc(dofs) = Fvisc(dofs) + fe;
     end
 end
 
